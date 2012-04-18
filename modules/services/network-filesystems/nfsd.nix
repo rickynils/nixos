@@ -83,7 +83,7 @@ in
     jobs.nfsd =
       { description = "Kernel NFS server";
 
-        startOn = "started networking";
+        startOn = "ip-up";
 
         path = [ pkgs.nfsUtils ];
 

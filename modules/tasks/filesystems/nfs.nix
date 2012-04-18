@@ -41,7 +41,7 @@ in
     boot.initrd.kernelModules = mkIf inInitrd [ "nfs" ];
 
     # Ensure that statd and idmapd are started before mountall.
-    jobs.mountall.preStart =
+    jobs."mountall-ip-up".preStart =
       ''
         ensure statd || true
         ensure idmapd || true
@@ -71,8 +71,6 @@ in
       { description = "NFS ID mapping daemon";
 
         path = [ pkgs.nfsUtils pkgs.sysvtools pkgs.utillinux ];
-
-        startOn = "started udev";
 
         preStart =
           ''
