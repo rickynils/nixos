@@ -1,12 +1,15 @@
 { config, pkgs, ... }:
 
 with pkgs.lib;
+with pkgs;
 
 let
 
   cfg = config.services.autofs;
 
-  autoMaster = pkgs.writeText "auto.master" cfg.autoMaster;
+  pidFile = "/run/automount.pid";
+
+  autoMaster = writeText "auto.master" cfg.autoMaster;
 
 in
 
@@ -29,7 +32,7 @@ in
       autoMaster = mkOption {
         example = literalExample ''
           autoMaster = let
-            mapConf = pkgs.writeText "auto" '''
+            mapConf = writeText "auto" '''
              kernel    -ro,soft,intr       ftp.kernel.org:/pub/linux
              boot      -fstype=ext2        :/dev/hda1
              windoze   -fstype=smbfs       ://windoze/c
@@ -57,9 +60,20 @@ in
 
       debug = mkOption {
         default = false;
-        description = "
-        pass -d and -7 to automount and write log to /var/log/autofs
-        ";
+        description = ''
+          Pass -d, -l7 and -v to automount daemon. Debug logs will be written
+          to /var/log/upstart/autofs.
+        '';
+      };
+
+      packages = mkOption {
+        default = [];
+        example = [ nfsUtils cifs_utils sshfsFuse ];
+        description = ''
+          A list of packages needed to support the filesystems you want to
+          automount. Note that you also might need to load kernel modules for
+          some filesystems (in some cases autofs does it automatically, though).
+        '';
       };
 
     };
@@ -71,49 +85,30 @@ in
 
   config = mkIf cfg.enable {
 
-    environment.etc = singleton
-      { target = "auto.master";
-        source = pkgs.writeText "auto.master" cfg.autoMaster;
-      };
-
     boot.kernelModules = [ "autofs4" ];
 
-    jobs.autofs =
-      { description = "Filesystem automounter";
+    jobs.autofs = {
+      description = "Filesystem automounter";
 
-        startOn = "started network-interfaces";
-        stopOn = "stopping network-interfaces";
+      startOn = "started network-interfaces";
+      stopOn = "stopping network-interfaces";
 
-        path = [ pkgs.nfsUtils pkgs.sshfsFuse ];
+      path = [ autofs5 coreutils ] ++ cfg.packages;
 
-        preStop =
-          ''
-            set -e; while :; do pkill -TERM automount; sleep 1; done
-          '';
+      # Trigger a clean unmount before killing automount
+      preStop = ''
+        PID=""
+        test -f ${pidFile} && PID=$(cat ${pidFile})
+        test -z $PID || kill -USR1 $PID || true
+      '';
 
-        # automount doesn't clean up when receiving SIGKILL.
-        # umount -l should unmount the directories recursively when they are no longer used
-        # It does, but traces are left in /etc/mtab. So unmount recursively..
-        postStop =
-          ''
-          PATH=${pkgs.gnused}/bin:${pkgs.coreutils}/bin
-          exec &> /tmp/logss
-          # double quote for sed:
-          escapeSpaces(){ sed 's/ /\\\\040/g'; }
-          unescapeSpaces(){ sed 's/\\040/ /g'; }
-          sed -n 's@^\s*\(\([^\\ ]\|\\ \)*\)\s.*@\1@p' ${autoMaster} | sed 's/[\\]//' | while read mountPoint; do
-            sed -n "s@[^ ]\+\s\+\($(echo "$mountPoint"| escapeSpaces)[^ ]*\).*@\1@p" /proc/mounts | sort -r | unescapeSpaces| while read smountP; do
-              ${pkgs.utillinux}/bin/umount -l "$smountP" || true
-            done
-          done
-          '';
-
-        script =
-          ''
-            ${if cfg.debug then "exec &> /var/log/autofs" else ""}
-            exec ${pkgs.autofs5}/sbin/automount ${if cfg.debug then "-d" else ""} -f -t ${builtins.toString cfg.timeout} "${autoMaster}" ${if cfg.debug then "-l7" else ""}
-          '';
-      };
+      # For some reason, "-l7" must be placed at the end, else startup fails
+      exec = ''
+        automount ${optionalString cfg.debug "-v -d"} -f \
+          -t ${builtins.toString cfg.timeout} -p ${pidFile} \
+          ${autoMaster} ${optionalString cfg.debug "-l7"}
+      '';
+    };
 
   };
 
